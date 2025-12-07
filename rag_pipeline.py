@@ -77,7 +77,10 @@ class RAGPipeline:
 
         for q in questions:
             try:
-                resp = requests.post(url, headers=headers, json={"question": q},
+                resp = requests.post(url, headers=headers, json={
+                                        "question": q,
+                                        "include_context": True
+                                    },
                                     timeout=self.config["rag_api"]["timeout"])
                 resp.raise_for_status()
                 data = resp.json()
