@@ -1,107 +1,23 @@
-# RAG Evaluation Framework Configuration
+# Simplified RAG Evaluation Config
 
-# RAG API Settings
 rag_api:
   base_url: "${RAG_API_BASE_URL:http://localhost:8000}"
+  api_key_env: "RAG_API_KEY"
+  upload_endpoint: "/api/v1/documents/upload"
+  query_endpoint: "/api/v1/query"
+  timeout: 60
 
-  auth:
-    type: "api_key"
-    header_name: "X-API-Key"
-    token_env: "RAG_API_KEY"
-
-  query:
-    endpoint: "/api/v1/query"
-    method: "POST"
-    timeout: 30
-    retry_count: 3
-    retry_backoff: 1.5
-    request_mapping:
-      question_field: "question"
-      collection_field: "collection"
-      top_k_field: "top_k"
-    response_mapping:
-      answer_field: "answer"
-      context_field: "contexts"
-      sources_field: "sources"
-
-  document_upload:
-    endpoint: "/api/v1/documents/upload"
-    batch_endpoint: "/api/v1/documents/batch"
-    timeout: 120
-    max_file_size_mb: 50
-    allowed_extensions:
-      - ".pdf"
-      - ".txt"
-      - ".docx"
-      - ".md"
-      - ".csv"
-      - ".json"
-    chunking:
-      strategy: "auto"
-      chunk_size: 512
-      chunk_overlap: 50
-    concurrency: 5
-
-# Azure OpenAI Settings
 llm:
   provider: "azure_openai"
-  deployment_name: "${AZURE_OPENAI_DEPLOYMENT_NAME:gpt-4}"
+  deployment: "${AZURE_OPENAI_DEPLOYMENT_NAME:gpt-4}"
   api_version: "${AZURE_OPENAI_API_VERSION:2024-02-15-preview}"
-  temperature: 0
-  max_tokens: 2000
-  requests_per_minute: 60
-  retry_on_rate_limit: true
 
-# Evaluation Settings
-evaluation:
-  metrics:
-    - faithfulness
-    - answer_relevancy
-    - context_relevancy
-  thresholds:
-    faithfulness: 0.7
-    answer_relevancy: 0.7
-    context_relevancy: 0.7
-  frameworks:
-    ragas:
-      enabled: true
-    deepeval:
-      enabled: true
-  comparison:
-    discrepancy_threshold: 0.2
-    calculate_correlation: true
+folders:
+  rag_output: "./data/RAG_output_folder"
+  evaluator_input: "./data/RAG_evaluator_input"
+  evaluation_output: "./data/evaluation_output_folder"
 
-# Input/Output Settings
-io:
-  input:
-    directory: "./data/input"
-    csv_encoding: "utf-8"
-    csv_question_column: "question"
-  output:
-    directory: "./data/output"
-    report_formats:
-      - csv
-      - json
-      - markdown
-    filename_template: "eval_report_{timestamp}"
-    timestamp_format: "%Y%m%d_%H%M%S"
-  documents:
-    directory: "./data/documents"
-
-# Logging Settings
-logging:
-  level: "INFO"
-  format: "structured"
-  outputs:
-    console: true
-    file:
-      enabled: true
-      path: "./logs/rag_eval.log"
-      rotation: "10 MB"
-      retention: 5
-
-# Display Settings
-display:
-  progress_bar: true
-  colors: true
-  table_style: "rounded"
+thresholds:
+  faithfulness: 0.8
+  answer_relevancy: 0.8
+  context_relevancy: 0.8
