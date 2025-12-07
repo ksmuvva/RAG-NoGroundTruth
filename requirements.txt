@@ -16,3 +16,6 @@ deepeval>=0.21.0
 openai>=1.6.0
 langchain>=0.1.0
 langchain-openai>=0.0.5
+
+# Testing
+pytest>=7.4.0
