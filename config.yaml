@@ -1,4 +1,5 @@
 # Simplified RAG Evaluation Config
+# Note: Both the RAG API and evaluation frameworks use Azure OpenAI as the LLM backend
 
 rag_api:
   base_url: "${RAG_API_BASE_URL:http://localhost:8000}"
