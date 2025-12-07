@@ -1,41 +1,18 @@
 # Core
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-
-# HTTP Client
-requests>=2.31.0
-httpx>=0.25.0
-aiohttp>=3.9.0
-
-# Data Processing
 pandas>=2.1.0
+requests>=2.31.0
 
-# Evaluation Frameworks
+# Document Processing
+PyPDF2>=3.0.0
+python-docx>=1.0.0
+
+# Evaluation (no ground truth metrics)
 ragas>=0.1.0
 deepeval>=0.21.0
 
-# LLM Provider (Azure OpenAI)
+# LLM
 openai>=1.6.0
 langchain>=0.1.0
 langchain-openai>=0.0.5
-
-# Document Processing
-python-multipart>=0.0.6
-PyPDF2>=3.0.0
-python-docx>=1.0.0
-chardet>=5.2.0
-
-# CLI
-click>=8.1.0
-rich>=13.7.0
-tqdm>=4.66.0
-
-# Logging
-structlog>=24.1.0
-
-# Testing
-pytest>=7.4.0
-pytest-asyncio>=0.23.0
-responses>=0.24.0
