@@ -1,5 +1,12 @@
 # Simplified RAG Evaluation Config
 # Note: Both the RAG API and evaluation frameworks use Azure OpenAI as the LLM backend
+#
+# Required Environment Variables:
+#   AZURE_OPENAI_ENDPOINT     - Azure OpenAI endpoint URL (for DeepEval metrics)
+#   AZURE_OPENAI_API_KEY      - Azure OpenAI API key (for DeepEval metrics)
+#   AZURE_OPENAI_DEPLOYMENT_NAME - Model deployment name (optional, defaults to gpt-4)
+#   AZURE_OPENAI_API_VERSION  - API version (optional, defaults to 2024-02-15-preview)
+#   RAG_API_KEY               - API key for your RAG service
 
 rag_api:
   base_url: "${RAG_API_BASE_URL:http://localhost:8000}"
@@ -8,6 +15,7 @@ rag_api:
   query_endpoint: "/api/v1/query"
   timeout: 60
 
+# LLM configuration used by evaluation frameworks (RAGAS and DeepEval)
 llm:
   provider: "azure_openai"
   deployment: "${AZURE_OPENAI_DEPLOYMENT_NAME:gpt-4}"
@@ -18,7 +26,9 @@ folders:
   evaluator_input: "./data/RAG_evaluator_input"
   evaluation_output: "./data/evaluation_output_folder"
 
+# Evaluation thresholds (0.0 - 1.0)
+# Scores >= threshold are considered "Pass"
 thresholds:
-  faithfulness: 0.8
-  answer_relevancy: 0.8
-  context_relevancy: 0.8
+  faithfulness: 0.8        # How factually consistent is the answer with the context?
+  answer_relevancy: 0.8    # How relevant is the answer to the question?
+  context_relevancy: 0.8   # Context quality (RAGAS: precision ranking, DeepEval: retrieval relevance)
