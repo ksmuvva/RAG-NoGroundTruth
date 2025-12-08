@@ -126,6 +126,58 @@ For document upload:
 - Microsoft Word (`.docx`)
 - Plain Text (`.txt`)
 
+## Data Format Examples
+
+This section provides detailed examples of the data at each stage of the pipeline.
+
+### Input: Questions CSV
+
+The input file contains questions to be sent to the RAG system:
+
+```csv
+question
+What is the main purpose of this document?
+How does the system handle user authentication?
+What are the key performance metrics described?
+What security measures are implemented?
+How is data stored and retrieved?
+```
+
+### RAG API Response
+
+The RAG API returns an answer and the retrieved contexts for each question:
+
+```json
+{
+    "answer": "The document describes a cloud-based data management system designed to handle large-scale data processing with high availability and fault tolerance.",
+    "contexts": [
+        "The primary purpose of the CloudData system is to provide enterprise-grade data management capabilities...",
+        "Key design goals include: high availability (99.99% uptime), fault tolerance through automatic failover...",
+        "The system is architected for handling petabyte-scale datasets while maintaining sub-second query response times..."
+    ]
+}
+```
+
+### Intermediate Data: RAG Output CSV
+
+After querying the RAG API, the pipeline creates a CSV with three columns:
+
+| Questions | Answer | Context |
+|-----------|--------|---------|
+| What is the main purpose of this document? | The document describes a cloud-based data management system designed to handle large-scale data processing with high availability and fault tolerance. | The primary purpose of the CloudData system is to provide enterprise-grade data management capabilities... \| Key design goals include: high availability (99.99% uptime), fault tolerance through automatic failover... \| The system is architected for handling petabyte-scale datasets while maintaining sub-second query response times... |
+| How does the system handle user authentication? | The system implements OAuth 2.0 with support for multi-factor authentication (MFA) and integrates with enterprise identity providers via SAML 2.0. | Authentication is handled through the AuthService module which implements OAuth 2.0... \| Multi-factor authentication can be enabled on a per-user or organization-wide basis... |
+
+**Note**: Multiple contexts are joined with ` | ` (pipe with spaces) as the delimiter.
+
+### Final Output: Evaluation Results CSV
+
+The evaluation adds metric scores and pass/fail indicators:
+
+| Questions | Answer | Context | RAGAS_Faithfulness | RAGAS_Answer_Relevancy | RAGAS_Context_Precision | DeepEval_Faithfulness | DeepEval_Answer_Relevancy | DeepEval_Contextual_Relevancy | Faithfulness_Pass | Answer_Relevancy_Pass | Context_Relevancy_Pass |
+|-----------|--------|---------|-------------------|----------------------|------------------------|----------------------|--------------------------|------------------------------|-------------------|----------------------|----------------------|
+| What is the main purpose of this document? | The document describes a cloud-based... | The primary purpose... | 0.923 | 0.891 | 0.850 | 0.889 | 0.912 | 0.834 | True | True | True |
+| How does the system handle user authentication? | The system implements OAuth 2.0... | Authentication is handled... | 0.867 | 0.945 | 0.780 | 0.834 | 0.901 | 0.756 | True | True | False |
+
 ## Output
 
 The pipeline generates evaluation results in the `data/evaluation_output_folder/` directory.
@@ -175,14 +227,154 @@ Context Relevancy:
 
 ## Evaluation Metrics
 
-### Faithfulness
-Measures whether the answer is factually consistent with the retrieved context. High faithfulness means the answer doesn't contain hallucinations.
+This pipeline uses the **original RAGAS and DeepEval libraries** directly to compute evaluation metrics. No custom implementations are used—all metric calculations leverage the official library implementations.
 
-### Answer Relevancy
-Measures how relevant the generated answer is to the original question. High relevancy means the answer directly addresses the question.
+### Overview of Metrics
 
-### Context Relevancy
-Measures how relevant the retrieved context is to answering the question. High relevancy means the RAG system retrieved appropriate documents.
+| Metric | RAGAS | DeepEval | What It Measures |
+|--------|-------|----------|------------------|
+| Faithfulness | `faithfulness` | `FaithfulnessMetric` | Is the answer factually consistent with the context? |
+| Answer Relevancy | `answer_relevancy` | `AnswerRelevancyMetric` | Does the answer address the question? |
+| Context Quality | `context_precision` | `ContextualRelevancyMetric` | Is the retrieved context appropriate? |
+
+---
+
+### RAGAS Metrics (Original Library)
+
+RAGAS (Retrieval Augmented Generation Assessment) is used directly via the `ragas` Python package. The pipeline imports and uses the original RAGAS metrics:
+
+```python
+from ragas import evaluate as ragas_eval
+from ragas.metrics import faithfulness, answer_relevancy, context_precision
+from datasets import Dataset
+
+# Convert data to RAGAS Dataset format
+dataset = Dataset.from_dict({
+    "question": [question],
+    "answer": [answer],
+    "contexts": [contexts]  # List of context strings
+})
+
+# Run evaluation using original RAGAS metrics
+ragas_result = ragas_eval(
+    dataset,
+    metrics=[faithfulness, answer_relevancy, context_precision]
+)
+
+# Extract scores from RAGAS EvaluationResult
+ragas_df = ragas_result.to_pandas()
+faithfulness_score = float(ragas_df["faithfulness"].iloc[0])
+answer_relevancy_score = float(ragas_df["answer_relevancy"].iloc[0])
+context_precision_score = float(ragas_df["context_precision"].iloc[0])
+```
+
+#### RAGAS Faithfulness
+- **Library**: `ragas.metrics.faithfulness`
+- **Range**: 0.0 to 1.0
+- **Calculation**: Decomposes the answer into individual claims, then verifies each claim against the provided context using an LLM. The score is the ratio of supported claims to total claims.
+- **Formula**: `faithfulness = (number of claims supported by context) / (total number of claims)`
+
+#### RAGAS Answer Relevancy
+- **Library**: `ragas.metrics.answer_relevancy`
+- **Range**: 0.0 to 1.0
+- **Calculation**: Generates hypothetical questions that the answer could address, then computes semantic similarity between these generated questions and the original question.
+- **Method**: Uses embedding-based similarity to measure how well the answer addresses the question.
+
+#### RAGAS Context Precision
+- **Library**: `ragas.metrics.context_precision`
+- **Range**: 0.0 to 1.0
+- **Calculation**: Evaluates whether relevant contexts appear earlier in the retrieved context list. Higher scores mean more relevant contexts are ranked higher.
+- **Note**: This measures **ranking quality**, not just relevance.
+
+---
+
+### DeepEval Metrics (Original Library)
+
+DeepEval is used directly via the `deepeval` Python package. The pipeline imports and uses the original DeepEval metrics:
+
+```python
+from deepeval.metrics import (
+    FaithfulnessMetric,
+    AnswerRelevancyMetric,
+    ContextualRelevancyMetric
+)
+from deepeval.test_case import LLMTestCase
+from deepeval.models import AzureOpenAI as DeepEvalAzureOpenAI
+
+# Initialize DeepEval model (Azure OpenAI)
+deepeval_model = DeepEvalAzureOpenAI(
+    model=deployment_name,
+    deployment_name=deployment_name,
+    azure_openai_api_key=api_key,
+    azure_endpoint=endpoint,
+    openai_api_version=api_version
+)
+
+# Create test case with input, output, and retrieval context
+test_case = LLMTestCase(
+    input=question,
+    actual_output=answer,
+    retrieval_context=contexts  # List of context strings
+)
+
+# Initialize and measure each metric
+faithfulness_metric = FaithfulnessMetric(threshold=0.8, model=deepeval_model)
+faithfulness_metric.measure(test_case)
+faithfulness_score = faithfulness_metric.score
+
+answer_relevancy_metric = AnswerRelevancyMetric(threshold=0.8, model=deepeval_model)
+answer_relevancy_metric.measure(test_case)
+answer_relevancy_score = answer_relevancy_metric.score
+
+contextual_relevancy_metric = ContextualRelevancyMetric(threshold=0.8, model=deepeval_model)
+contextual_relevancy_metric.measure(test_case)
+contextual_relevancy_score = contextual_relevancy_metric.score
+```
+
+#### DeepEval Faithfulness
+- **Library**: `deepeval.metrics.FaithfulnessMetric`
+- **Range**: 0.0 to 1.0
+- **Calculation**: Uses an LLM to extract claims from the answer and verify each claim against the retrieval context. Measures factual consistency.
+- **Similar to**: RAGAS faithfulness, but may use different prompting strategies.
+
+#### DeepEval Answer Relevancy
+- **Library**: `deepeval.metrics.AnswerRelevancyMetric`
+- **Range**: 0.0 to 1.0
+- **Calculation**: Uses an LLM to determine if the actual output (answer) addresses the input (question) appropriately.
+- **Method**: Direct LLM-based assessment of relevance.
+
+#### DeepEval Contextual Relevancy
+- **Library**: `deepeval.metrics.ContextualRelevancyMetric`
+- **Range**: 0.0 to 1.0
+- **Calculation**: Evaluates whether the retrieved contexts are relevant to answering the input question.
+- **Note**: This measures **retrieval relevance** (different from RAGAS context_precision which measures ranking).
+
+---
+
+### Pass/Fail Determination
+
+A metric passes if **either** the RAGAS score **or** the DeepEval score meets the threshold:
+
+```python
+# Pass if either framework meets threshold (OR logic)
+faithfulness_pass = (ragas_faithfulness >= threshold) or (deepeval_faithfulness >= threshold)
+answer_relevancy_pass = (ragas_answer_relevancy >= threshold) or (deepeval_answer_relevancy >= threshold)
+context_relevancy_pass = (ragas_context_precision >= threshold) or (deepeval_contextual_relevancy >= threshold)
+```
+
+**Default threshold**: `0.8` (80%) for all metrics, configurable in `config.yaml`.
+
+---
+
+### Key Differences Between RAGAS and DeepEval Context Metrics
+
+| Aspect | RAGAS `context_precision` | DeepEval `ContextualRelevancyMetric` |
+|--------|---------------------------|--------------------------------------|
+| **Focus** | Ranking quality | Retrieval relevance |
+| **Question** | Are relevant contexts ranked higher? | Are retrieved contexts relevant to the query? |
+| **Use Case** | Evaluating retrieval ranking | Evaluating retrieval selection |
+
+Both metrics are valuable: RAGAS helps ensure your best contexts appear first, while DeepEval ensures all retrieved contexts are actually relevant.
 
 ## Project Structure
 
