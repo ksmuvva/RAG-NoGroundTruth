@@ -153,13 +153,17 @@ class RAGPipeline:
 
     def _evaluate(self, df: pd.DataFrame) -> pd.DataFrame:
         """Run RAGAS and DeepEval metrics (no ground truth needed)"""
+        # Import flags
+        ragas_available = False
+        deepeval_available = False
+
         try:
             from ragas import evaluate as ragas_eval
             from ragas.metrics import faithfulness, answer_relevancy, context_precision
             from datasets import Dataset
+            ragas_available = True
         except ImportError:
-            print("[WARN] RAGAS not installed. Using fallback evaluation.")
-            return self._fallback_evaluate(df)
+            print("[WARN] RAGAS not installed. Skipping RAGAS evaluation.")
 
         try:
             from deepeval.metrics import (
@@ -168,8 +172,23 @@ class RAGPipeline:
                 ContextualRelevancyMetric
             )
             from deepeval.test_case import LLMTestCase
+            from deepeval.models import AzureOpenAI as DeepEvalAzureOpenAI
+            deepeval_available = True
         except ImportError:
-            print("[WARN] DeepEval not installed. Using RAGAS only.")
+            print("[WARN] DeepEval not installed. Skipping DeepEval evaluation.")
+
+        if not ragas_available and not deepeval_available:
+            print("[WARN] Neither RAGAS nor DeepEval available. Using fallback evaluation.")
+            return self._fallback_evaluate(df)
+
+        # Initialize DeepEval model if available
+        deepeval_model = None
+        if deepeval_available:
+            try:
+                deepeval_model = self._create_deepeval_model(DeepEvalAzureOpenAI)
+            except Exception as e:
+                print(f"[WARN] Failed to initialize DeepEval model: {e}")
+                deepeval_available = False
 
         results = []
         thresholds = self.config["thresholds"]
@@ -181,67 +200,127 @@ class RAGPipeline:
             scores = {"Questions": q, "Answer": a, "Context": c}
 
             # RAGAS evaluation
-            try:
-                dataset = Dataset.from_dict({
-                    "question": [q],
-                    "answer": [a],
-                    "contexts": [contexts]
-                })
-                ragas_result = ragas_eval(dataset, metrics=[faithfulness, answer_relevancy, context_precision])
-                scores["RAGAS_Faithfulness"] = round(ragas_result["faithfulness"], 3)
-                scores["RAGAS_Answer_Relevancy"] = round(ragas_result["answer_relevancy"], 3)
-                scores["RAGAS_Context_Relevancy"] = round(ragas_result["context_precision"], 3)
-            except Exception as e:
-                print(f"[WARN] RAGAS failed for '{q[:30]}...': {e}")
+            if ragas_available:
+                try:
+                    dataset = Dataset.from_dict({
+                        "question": [q],
+                        "answer": [a],
+                        "contexts": [contexts]
+                    })
+                    ragas_result = ragas_eval(dataset, metrics=[faithfulness, answer_relevancy, context_precision])
+
+                    # FIX: Access scores correctly from EvaluationResult
+                    # The evaluate() function returns an EvaluationResult object.
+                    # For single-sample evaluation, convert to pandas and get first row values.
+                    ragas_df = ragas_result.to_pandas()
+                    scores["RAGAS_Faithfulness"] = round(float(ragas_df["faithfulness"].iloc[0]), 3)
+                    scores["RAGAS_Answer_Relevancy"] = round(float(ragas_df["answer_relevancy"].iloc[0]), 3)
+                    # Note: RAGAS context_precision measures if relevant contexts are ranked higher.
+                    # This differs from DeepEval's ContextualRelevancy which measures retrieval relevance.
+                    scores["RAGAS_Context_Precision"] = round(float(ragas_df["context_precision"].iloc[0]), 3)
+                except Exception as e:
+                    print(f"[WARN] RAGAS failed for '{q[:30]}...': {e}")
+                    scores["RAGAS_Faithfulness"] = 0.0
+                    scores["RAGAS_Answer_Relevancy"] = 0.0
+                    scores["RAGAS_Context_Precision"] = 0.0
+            else:
                 scores["RAGAS_Faithfulness"] = 0.0
                 scores["RAGAS_Answer_Relevancy"] = 0.0
-                scores["RAGAS_Context_Relevancy"] = 0.0
+                scores["RAGAS_Context_Precision"] = 0.0
 
             # DeepEval evaluation
-            try:
-                test_case = LLMTestCase(
-                    input=q,
-                    actual_output=a,
-                    retrieval_context=contexts
-                )
+            if deepeval_available and deepeval_model:
+                try:
+                    test_case = LLMTestCase(
+                        input=q,
+                        actual_output=a,
+                        retrieval_context=contexts
+                    )
 
-                faith_metric = FaithfulnessMetric(threshold=thresholds["faithfulness"])
-                relevancy_metric = AnswerRelevancyMetric(threshold=thresholds["answer_relevancy"])
-                context_metric = ContextualRelevancyMetric(threshold=thresholds["context_relevancy"])
+                    # FIX: Pass model to each metric - required by DeepEval
+                    faith_metric = FaithfulnessMetric(
+                        threshold=thresholds["faithfulness"],
+                        model=deepeval_model
+                    )
+                    relevancy_metric = AnswerRelevancyMetric(
+                        threshold=thresholds["answer_relevancy"],
+                        model=deepeval_model
+                    )
+                    # Note: DeepEval ContextualRelevancyMetric measures if retrieved context
+                    # is relevant to the input query (different from RAGAS context_precision)
+                    context_metric = ContextualRelevancyMetric(
+                        threshold=thresholds["context_relevancy"],
+                        model=deepeval_model
+                    )
 
-                faith_metric.measure(test_case)
-                relevancy_metric.measure(test_case)
-                context_metric.measure(test_case)
+                    faith_metric.measure(test_case)
+                    relevancy_metric.measure(test_case)
+                    context_metric.measure(test_case)
 
-                scores["DeepEval_Faithfulness"] = round(faith_metric.score, 3)
-                scores["DeepEval_Answer_Relevancy"] = round(relevancy_metric.score, 3)
-                scores["DeepEval_Context_Relevancy"] = round(context_metric.score, 3)
-            except Exception as e:
-                print(f"[WARN] DeepEval failed for '{q[:30]}...': {e}")
+                    scores["DeepEval_Faithfulness"] = round(faith_metric.score, 3)
+                    scores["DeepEval_Answer_Relevancy"] = round(relevancy_metric.score, 3)
+                    scores["DeepEval_Contextual_Relevancy"] = round(context_metric.score, 3)
+                except Exception as e:
+                    print(f"[WARN] DeepEval failed for '{q[:30]}...': {e}")
+                    scores["DeepEval_Faithfulness"] = 0.0
+                    scores["DeepEval_Answer_Relevancy"] = 0.0
+                    scores["DeepEval_Contextual_Relevancy"] = 0.0
+            else:
                 scores["DeepEval_Faithfulness"] = 0.0
                 scores["DeepEval_Answer_Relevancy"] = 0.0
-                scores["DeepEval_Context_Relevancy"] = 0.0
+                scores["DeepEval_Contextual_Relevancy"] = 0.0
 
             # Pass/Fail based on thresholds
-            scores["Faithfulness_Pass"] = (scores.get("RAGAS_Faithfulness", 0) >= thresholds["faithfulness"] or
-                                           scores.get("DeepEval_Faithfulness", 0) >= thresholds["faithfulness"])
-            scores["Answer_Relevancy_Pass"] = (scores.get("RAGAS_Answer_Relevancy", 0) >= thresholds["answer_relevancy"] or
-                                               scores.get("DeepEval_Answer_Relevancy", 0) >= thresholds["answer_relevancy"])
-            scores["Context_Relevancy_Pass"] = (scores.get("RAGAS_Context_Relevancy", 0) >= thresholds["context_relevancy"] or
-                                                scores.get("DeepEval_Context_Relevancy", 0) >= thresholds["context_relevancy"])
+            scores["Faithfulness_Pass"] = (
+                scores.get("RAGAS_Faithfulness", 0) >= thresholds["faithfulness"] or
+                scores.get("DeepEval_Faithfulness", 0) >= thresholds["faithfulness"]
+            )
+            scores["Answer_Relevancy_Pass"] = (
+                scores.get("RAGAS_Answer_Relevancy", 0) >= thresholds["answer_relevancy"] or
+                scores.get("DeepEval_Answer_Relevancy", 0) >= thresholds["answer_relevancy"]
+            )
+            # Context relevancy pass uses both metrics (precision from RAGAS, relevancy from DeepEval)
+            scores["Context_Relevancy_Pass"] = (
+                scores.get("RAGAS_Context_Precision", 0) >= thresholds["context_relevancy"] or
+                scores.get("DeepEval_Contextual_Relevancy", 0) >= thresholds["context_relevancy"]
+            )
 
             results.append(scores)
 
         return pd.DataFrame(results)
 
+    def _create_deepeval_model(self, AzureOpenAIClass):
+        """Create DeepEval Azure OpenAI model from config and environment"""
+        llm_config = self.config.get("llm", {})
+
+        # Get configuration from environment/config
+        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+        api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
+        deployment = llm_config.get("deployment", os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4"))
+        api_version = llm_config.get("api_version", os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview"))
+
+        if not azure_endpoint or not api_key:
+            raise ValueError(
+                "DeepEval requires AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY environment variables. "
+                "Please set these to use DeepEval metrics."
+            )
+
+        return AzureOpenAIClass(
+            model=deployment,
+            deployment_name=deployment,
+            azure_openai_api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            openai_api_version=api_version
+        )
+
     def _fallback_evaluate(self, df: pd.DataFrame) -> pd.DataFrame:
         """Simple fallback when evaluation libraries unavailable"""
         df["RAGAS_Faithfulness"] = 0.0
         df["RAGAS_Answer_Relevancy"] = 0.0
-        df["RAGAS_Context_Relevancy"] = 0.0
+        df["RAGAS_Context_Precision"] = 0.0
         df["DeepEval_Faithfulness"] = 0.0
         df["DeepEval_Answer_Relevancy"] = 0.0
-        df["DeepEval_Context_Relevancy"] = 0.0
+        df["DeepEval_Contextual_Relevancy"] = 0.0
         df["Faithfulness_Pass"] = False
         df["Answer_Relevancy_Pass"] = False
         df["Context_Relevancy_Pass"] = False
@@ -253,24 +332,53 @@ class RAGPipeline:
         print("EVALUATION SUMMARY")
         print("=" * 50)
 
-        metrics = ["Faithfulness", "Answer_Relevancy", "Context_Relevancy"]
-        for m in metrics:
-            ragas_col = f"RAGAS_{m}"
-            deep_col = f"DeepEval_{m}"
-            pass_col = f"{m}_Pass"
+        # Define metrics with their RAGAS and DeepEval column names
+        # Note: Context metrics have different names due to different measurement approaches
+        metrics_config = [
+            {
+                "name": "Faithfulness",
+                "ragas_col": "RAGAS_Faithfulness",
+                "deepeval_col": "DeepEval_Faithfulness",
+                "pass_col": "Faithfulness_Pass",
+                "threshold_key": "faithfulness"
+            },
+            {
+                "name": "Answer Relevancy",
+                "ragas_col": "RAGAS_Answer_Relevancy",
+                "deepeval_col": "DeepEval_Answer_Relevancy",
+                "pass_col": "Answer_Relevancy_Pass",
+                "threshold_key": "answer_relevancy"
+            },
+            {
+                "name": "Context Quality",
+                "ragas_col": "RAGAS_Context_Precision",  # Measures ranking of relevant contexts
+                "deepeval_col": "DeepEval_Contextual_Relevancy",  # Measures relevance of retrieved contexts
+                "pass_col": "Context_Relevancy_Pass",
+                "threshold_key": "context_relevancy"
+            }
+        ]
 
-            if ragas_col in df.columns:
-                ragas_avg = df[ragas_col].mean()
-                deep_avg = df[deep_col].mean() if deep_col in df.columns else 0
-                pass_rate = df[pass_col].mean() * 100 if pass_col in df.columns else 0
+        for metric in metrics_config:
+            ragas_col = metric["ragas_col"]
+            deep_col = metric["deepeval_col"]
+            pass_col = metric["pass_col"]
 
-                threshold = self.config["thresholds"].get(m.lower().replace("_", "_"), 0.8)
-                status = "PASS" if (ragas_avg >= threshold or deep_avg >= threshold) else "FAIL"
+            ragas_avg = df[ragas_col].mean() if ragas_col in df.columns else 0
+            deep_avg = df[deep_col].mean() if deep_col in df.columns else 0
+            pass_rate = df[pass_col].mean() * 100 if pass_col in df.columns else 0
 
-                print(f"\n{m.replace('_', ' ')}:")
+            threshold = self.config["thresholds"].get(metric["threshold_key"], 0.8)
+            status = "PASS" if (ragas_avg >= threshold or deep_avg >= threshold) else "FAIL"
+
+            print(f"\n{metric['name']}:")
+            if "Context" in metric["name"]:
+                # Show different labels for context metrics to clarify the difference
+                print(f"  RAGAS (Precision):       {ragas_avg:.3f}")
+                print(f"  DeepEval (Relevancy):    {deep_avg:.3f}")
+            else:
                 print(f"  RAGAS:    {ragas_avg:.3f}")
                 print(f"  DeepEval: {deep_avg:.3f}")
-                print(f"  Pass Rate: {pass_rate:.1f}% [{status}]")
+            print(f"  Pass Rate: {pass_rate:.1f}% [{status}]")
 
         print("\n" + "=" * 50)
 
